@@ -974,7 +974,7 @@
         "type": "git",
         "path": "php-src/ext/swow-src",
         "rev": "ci",
-        "url": "https://github.com/Mr-ShiHuaYu/swow",
+        "url": "https://github.com/swow/swow/tree/v1.5.3",
         "license": {
             "type": "file",
             "path": "LICENSE"
