@@ -39,41 +39,48 @@ env:
 jobs:
   build:
     name: build ${{ inputs.version }} on Windows x86_64
-    runs-on: windows-latest
+    runs-on: windows-2019  # 关键修改：指定VS2019环境[3,6](@ref)
+
     steps:
       - uses: actions/checkout@v4
 
-      # Cache composer dependencies
+      # 显式配置VS2019环境
+      - name: Set VS2019 Environment
+        shell: cmd
+        run: call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+
+      # 缓存Composer依赖
       - id: cache-composer-deps
         uses: actions/cache@v4
         with:
           path: vendor
-          key: composer-dependencies
+          key: composer-dependencies-${{ runner.os }}
 
-      # If there's no Composer cache, install dependencies
+      # 无缓存时安装依赖
       - if: steps.cache-composer-deps.outputs.cache-hit != 'true'
-        run: composer update --no-dev --classmap-authoritative
+        run: composer update --no-dev --classmap-authoritative --install-dir=vendor
 
+      # 生成唯一缓存键（含环境标识）
       - name: Generate hashed key for download cache
         shell: bash
         run: |
-          INPUT_HASH=$(echo "${{ runner.os }}-${{ inputs.version }}-${{ inputs.extensions }}" | sha256sum | awk '{print $1}')
+          INPUT_HASH=$(echo "${{ runner.os }}-vs2019-${{ inputs.version }}-${{ inputs.extensions }}" | sha256sum | awk '{print $1}')
           echo "INPUT_HASH=${INPUT_HASH}" >> "$GITHUB_ENV"
 
-      # Cache downloaded source
+      # 缓存下载资源
       - id: cache-download
         uses: actions/cache@v4
         with:
           path: downloads
-          key: php-${{ env.INPUT_HASH }}
+          key: php-${{ runner.os }}-vs2019-${{ env.INPUT_HASH }}  # 关键修改：标识环境
 
-      # With or without debug
+      # 调试与预编译配置
       - if: inputs.debug == true
         run: echo "SPC_BUILD_DEBUG=--debug" >> $env:GITHUB_ENV
       - if: inputs.prefer-pre-built == true
         run: echo "SPC_PRE_BUILT=--prefer-pre-built" >> $env:GITHUB_ENV
 
-      # With target select: cli, micro or both
+      # 目标构建类型配置
       - if: ${{ inputs.build-cli == true }}
         run: echo "SPC_BUILD_CLI=--build-cli" >> $env:GITHUB_ENV
       - if: ${{ inputs.build-micro == true }}
@@ -81,28 +88,26 @@ jobs:
 
       - run: ./bin/spc doctor
 
-      # If there's no dependencies cache, fetch sources, with or without debug
+      # 无缓存时下载资源
       - if: steps.cache-download.outputs.cache-hit != 'true'
         run: ./bin/spc download --with-php="${{ inputs.version }}" --for-extensions="${{ inputs.extensions }}" ${{ env.SPC_BUILD_DEBUG }} ${{ env.SPC_PRE_BUILT }}
 
-      # Run build command
-      - run: ./bin/spc build "${{ inputs.extensions }}" ${{ env.SPC_BUILD_DEBUG }} ${{ env.SPC_BUILD_CLI }} ${{ env.SPC_BUILD_MICRO }} ${{ env.SPC_BUILD_FPM }}
+      # 执行构建
+      - run: ./bin/spc build "${{ inputs.extensions }}" ${{ env.SPC_BUILD_DEBUG }} ${{ env.SPC_BUILD_CLI }} ${{ env.SPC_BUILD_MICRO }}
 
-      # Upload cli executable
+      # 成品上传
       - if: ${{ inputs.build-cli == true }}
         uses: actions/upload-artifact@v4
         with:
-          name: php-${{ inputs.version }}
+          name: php-${{ inputs.version }}-vs2019  # 标识环境
           path: buildroot/bin/php.exe
 
-      # Upload micro self-extracted executable
       - if: ${{ inputs.build-micro == true }}
         uses: actions/upload-artifact@v4
         with:
-          name: micro-${{ inputs.version }}
+          name: micro-${{ inputs.version }}-vs2019  # 标识环境
           path: buildroot/bin/micro.sfx
 
-      # Upload extensions metadata
       - uses: actions/upload-artifact@v4
         with:
           name: license-files
