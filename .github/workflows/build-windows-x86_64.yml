@@ -39,48 +39,54 @@ env:
 jobs:
   build:
     name: build ${{ inputs.version }} on Windows x86_64
-    runs-on: windows-2019  # 关键修改：指定VS2019环境[3,6](@ref)
+    # 关键修改1：迁移至官方支持的运行器环境
+    runs-on: windows-2022  # ✅ 替代已停用的windows-2019 [1](@ref)
 
     steps:
       - uses: actions/checkout@v4
 
-      # 显式配置VS2019环境
-      - name: Set VS2019 Environment
-        shell: cmd
-        run: call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+      # 关键修改2：显式加载VS2019工具链
+      - name: Setup VS2019 Build Tools
+        uses: ilammy/msvc-dev-cmd@v1  # ✅ 官方推荐的MSVC环境配置方案 [1,8](@ref)
+        with:
+          toolchain: VS2019  # 强制指定VS2019编译器
 
-      # 缓存Composer依赖
+      # 关键修改3：验证编译器版本（调试用）
+      - name: Verify VS2019 Compiler
+        shell: cmd
+        run: |
+          cl /? | findstr "Version 19.2"  # VS2019版本号前缀为19.2x
+          if errorlevel 1 exit 1
+
+      # 缓存Composer依赖（保持原逻辑）
       - id: cache-composer-deps
         uses: actions/cache@v4
         with:
           path: vendor
           key: composer-dependencies-${{ runner.os }}
 
-      # 无缓存时安装依赖
       - if: steps.cache-composer-deps.outputs.cache-hit != 'true'
         run: composer update --no-dev --classmap-authoritative --install-dir=vendor
 
-      # 生成唯一缓存键（含环境标识）
+      # 关键修改4：缓存键加入环境标识
       - name: Generate hashed key for download cache
         shell: bash
         run: |
-          INPUT_HASH=$(echo "${{ runner.os }}-vs2019-${{ inputs.version }}-${{ inputs.extensions }}" | sha256sum | awk '{print $1}')
-          echo "INPUT_HASH=${INPUT_HASH}" >> "$GITHUB_ENV"
+          INPUT_HASH=$(echo "win2022-vs2019-${{ inputs.version }}-${{ inputs.extensions }}" | sha256sum | awk '{print $1}')
+          echo "INPUT_HASH=${INPUT_HASH}" >> "$GITHUB_ENV"  # ✅ 隔离不同环境缓存 [4](@ref)
 
-      # 缓存下载资源
       - id: cache-download
         uses: actions/cache@v4
         with:
           path: downloads
-          key: php-${{ runner.os }}-vs2019-${{ env.INPUT_HASH }}  # 关键修改：标识环境
+          key: php-${{ env.INPUT_HASH }}  # 使用唯一键
 
-      # 调试与预编译配置
+      # 调试与预编译配置（保持原逻辑）
       - if: inputs.debug == true
         run: echo "SPC_BUILD_DEBUG=--debug" >> $env:GITHUB_ENV
       - if: inputs.prefer-pre-built == true
         run: echo "SPC_PRE_BUILT=--prefer-pre-built" >> $env:GITHUB_ENV
 
-      # 目标构建类型配置
       - if: ${{ inputs.build-cli == true }}
         run: echo "SPC_BUILD_CLI=--build-cli" >> $env:GITHUB_ENV
       - if: ${{ inputs.build-micro == true }}
@@ -88,24 +94,23 @@ jobs:
 
       - run: ./bin/spc doctor
 
-      # 无缓存时下载资源
       - if: steps.cache-download.outputs.cache-hit != 'true'
         run: ./bin/spc download --with-php="${{ inputs.version }}" --for-extensions="${{ inputs.extensions }}" ${{ env.SPC_BUILD_DEBUG }} ${{ env.SPC_PRE_BUILT }}
 
-      # 执行构建
+      # 执行构建（自动继承VS2019环境变量）
       - run: ./bin/spc build "${{ inputs.extensions }}" ${{ env.SPC_BUILD_DEBUG }} ${{ env.SPC_BUILD_CLI }} ${{ env.SPC_BUILD_MICRO }}
 
-      # 成品上传
+      # 关键修改5：成品名称标注环境标识
       - if: ${{ inputs.build-cli == true }}
         uses: actions/upload-artifact@v4
         with:
-          name: php-${{ inputs.version }}-vs2019  # 标识环境
+          name: php-${{ inputs.version }}-win2022-vs2019  # ✅ 清晰区分构建环境
           path: buildroot/bin/php.exe
 
       - if: ${{ inputs.build-micro == true }}
         uses: actions/upload-artifact@v4
         with:
-          name: micro-${{ inputs.version }}-vs2019  # 标识环境
+          name: micro-${{ inputs.version }}-win2022-vs2019
           path: buildroot/bin/micro.sfx
 
       - uses: actions/upload-artifact@v4
