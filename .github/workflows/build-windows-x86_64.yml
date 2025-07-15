@@ -39,24 +39,36 @@ env:
 jobs:
   build:
     name: build ${{ inputs.version }} on Windows x86_64
-    runs-on: windows-2022  # ✅ 使用当前官方支持环境[1,5](@ref)
-
+    runs-on: windows-2022  # 使用当前支持的运行器
+    
+    # ✅ 关键修复：使用官方支持的 Action
+    strategy:
+      matrix:
+        vc-path: [ "C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Enterprise" ]
+    
     steps:
       - uses: actions/checkout@v4
 
-      # ✅ 核心修正：配置VS2019编译器[8](@ref)
-      - name: Setup VS2019 Build Tools
-        uses: ilammy/setup-msvc@v1
+      # ✅ 修复1：使用微软官方 Action 安装 VS2019
+      - name: Install VS2019 Build Tools
+        uses: microsoft/setup-msbuild@v1
         with:
-          vs-version: '16.0'  # VS2019版本号
-          arch: x64           # 明确指定64位架构
+          vs-version: '16.0'  # VS2019
+          architecture: x64
 
-      # ✅ 验证编译器版本（确保环境正确）
-      - name: Verify VS2019 Compiler
+      # ✅ 修复2：手动设置 VS2019 环境变量
+      - name: Set VS2019 Environment
+        shell: cmd
+        run: |
+          call "${{ matrix.vc-path }}\VC\Auxiliary\Build\vcvars64.bat"
+          echo "VC_PATH=${{ matrix.vc-path }}" >> $env:GITHUB_ENV
+
+      # ✅ 验证编译器版本
+      - name: Verify Compiler
         shell: cmd
         run: |
           cl /? | findstr "Version 19.2"
-          if errorlevel 1 (echo "ERROR: Not using VS2019 compiler!" && exit 1)
+          if errorlevel 1 (echo "ERROR: VS2019 compiler not found!" && exit 1)
 
       # 缓存Composer依赖
       - id: cache-composer-deps
@@ -68,7 +80,7 @@ jobs:
       - if: steps.cache-composer-deps.outputs.cache-hit != 'true'
         run: composer update --no-dev --classmap-authoritative
 
-      # ✅ 缓存键加入环境标识（隔离不同编译器缓存）[5](@ref)
+      # 缓存键包含环境标识
       - name: Generate hashed key for download cache
         shell: bash
         run: |
@@ -95,14 +107,14 @@ jobs:
 
       - run: ./bin/spc doctor
 
-      # 下载依赖（无缓存时）
+      # 下载依赖
       - if: steps.cache-download.outputs.cache-hit != 'true'
         run: ./bin/spc download --with-php="${{ inputs.version }}" --for-extensions="${{ inputs.extensions }}" ${{ env.SPC_BUILD_DEBUG }} ${{ env.SPC_PRE_BUILT }}
 
-      # ✅ 执行构建（继承VS2019环境）
+      # 执行构建
       - run: ./bin/spc build "${{ inputs.extensions }}" ${{ env.SPC_BUILD_DEBUG }} ${{ env.SPC_BUILD_CLI }} ${{ env.SPC_BUILD_MICRO }}
 
-      # ✅ 成品上传（标注环境标识）[3](@ref)
+      # 成品上传
       - if: ${{ inputs.build-cli == true }}
         uses: actions/upload-artifact@v4
         with:
