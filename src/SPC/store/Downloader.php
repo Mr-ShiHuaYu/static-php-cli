@@ -18,12 +18,13 @@ use SPC\util\SPCTarget;
 class Downloader
 {
     /**
-     * Get latest version from BitBucket tag (type = bitbuckettag)
+     * Get latest version from BitBucket tag
      *
-     * @param  string              $name   source name
-     * @param  array               $source source meta info: [repo]
+     * @param  string              $name   Source name
+     * @param  array               $source Source meta info: [repo]
      * @return array<int, string>  [url, filename]
      * @throws DownloaderException
+     * @throws RuntimeException
      */
     public static function getLatestBitbucketTag(string $name, array $source): array
     {
@@ -53,13 +54,12 @@ class Downloader
     }
 
     /**
-     * Get latest version from GitHub tarball (type = ghtar / ghtagtar)
+     * Get latest version from GitHub tarball
      *
-     * @param  string             $name   source name
-     * @param  array              $source source meta info: [repo]
-     * @param  string             $type   type of tarball, default is 'releases'
-     * @return array<int, string> [url, filename]
-     *
+     * @param  string              $name   Source name
+     * @param  array               $source Source meta info: [repo]
+     * @param  string              $type   Type of tarball, default is 'releases'
+     * @return array<int, string>  [url, filename]
      * @throws DownloaderException
      */
     public static function getLatestGithubTarball(string $name, array $source, string $type = 'releases'): array
@@ -107,8 +107,8 @@ class Downloader
     /**
      * Get latest version from GitHub release (uploaded archive)
      *
-     * @param  string              $name         source name
-     * @param  array               $source       source meta info: [repo, match]
+     * @param  string              $name         Source name
+     * @param  array               $source       Source meta info: [repo, match]
      * @param  bool                $match_result Whether to return matched result by `match` param (default: true)
      * @return array<int, string>  When $match_result = true, and we matched, [url, filename]. Otherwise, [{asset object}. ...]
      * @throws DownloaderException
@@ -150,8 +150,8 @@ class Downloader
     /**
      * Get latest version from file list (regex based crawler)
      *
-     * @param  string              $name   source name
-     * @param  array               $source source meta info: [url, regex]
+     * @param  string              $name   Source name
+     * @param  array               $source Source meta info: [filelist]
      * @return array<int, string>  [url, filename]
      * @throws DownloaderException
      */
@@ -187,11 +187,17 @@ class Downloader
     }
 
     /**
-     * Just download file using system curl command, and lock it
+     * Download file from URL
      *
-     * @throws FileSystemException
+     * @param  string              $name        Download name
+     * @param  string              $url         Download URL
+     * @param  string              $filename    Target filename
+     * @param  null|string         $move_path   Optional move path after download
+     * @param  int                 $download_as Download type constant
+     * @param  array               $headers     Optional HTTP headers
+     * @param  array               $hooks       Optional curl hooks
+     * @throws DownloaderException
      * @throws RuntimeException
-     * @throws WrongUsageException
      */
     public static function downloadFile(string $name, string $url, string $filename, ?string $move_path = null, int $download_as = SPC_DOWNLOAD_SOURCE, array $headers = [], array $hooks = []): void
     {
@@ -213,40 +219,53 @@ class Downloader
     }
 
     /**
-     * Download git source, and lock it.
+     * Download Git repository
      *
-     * @throws FileSystemException
+     * @param  string              $name       Repository name
+     * @param  string              $url        Git repository URL
+     * @param  string              $branch     Branch to checkout
+     * @param  null|array          $submodules Optional submodules to initialize
+     * @param  null|string         $move_path  Optional move path after download
+     * @param  int                 $retries    Number of retry attempts
+     * @param  int                 $lock_as    Lock type constant
+     * @throws DownloaderException
      * @throws RuntimeException
-     * @throws WrongUsageException
      */
-    public static function downloadGit(string $name, string $url, string $branch, ?string $move_path = null, int $retries = 0, int $lock_as = SPC_DOWNLOAD_SOURCE): void
+    public static function downloadGit(string $name, string $url, string $branch, ?array $submodules = null, ?string $move_path = null, int $retries = 0, int $lock_as = SPC_DOWNLOAD_SOURCE): void
     {
         $download_path = FileSystem::convertPath(DOWNLOAD_PATH . "/{$name}");
         if (file_exists($download_path)) {
             FileSystem::removeDir($download_path);
         }
         logger()->debug("cloning {$name} source");
-        $check = !defined('DEBUG_MODE') ? ' -q' : '';
-        $cancel_func = function () use ($download_path) {
+
+        $quiet = !defined('DEBUG_MODE') ? '-q --quiet' : '';
+        $git = SPC_GIT_EXEC;
+        $shallow = defined('GIT_SHALLOW_CLONE') ? '--depth 1 --single-branch' : '';
+        $recursive = ($submodules === null) ? '--recursive' : '';
+
+        try {
+            self::registerCancelEvent(function () use ($download_path) {
+                if (is_dir($download_path)) {
+                    logger()->warning('Removing path ' . $download_path);
+                    FileSystem::removeDir($download_path);
+                }
+            });
+            f_passthru("{$git} clone {$quiet} --config core.autocrlf=false --branch \"{$branch}\" {$shallow} {$recursive} \"{$url}\" \"{$download_path}\"");
+            if ($submodules !== null) {
+                foreach ($submodules as $submodule) {
+                    f_passthru("cd \"{$download_path}\" && {$git} submodule update --init " . escapeshellarg($submodule));
+                }
+            }
+        } catch (RuntimeException $e) {
             if (is_dir($download_path)) {
-                logger()->warning('Removing path ' . $download_path);
                 FileSystem::removeDir($download_path);
             }
-        };
-        try {
-            self::registerCancelEvent($cancel_func);
-            f_passthru(
-                SPC_GIT_EXEC . ' clone' . $check .
-                (defined('DEBUG_MODE') ? '' : ' --quiet') .
-                ' --config core.autocrlf=false ' .
-                "--branch \"{$branch}\" " . (defined('GIT_SHALLOW_CLONE') ? '--depth 1 --single-branch' : '') . " --recursive \"{$url}\" \"{$download_path}\""
-            );
-        } catch (RuntimeException $e) {
             if ($e->getCode() === 2 || $e->getCode() === -1073741510) {
                 throw new WrongUsageException('Keyboard interrupted, download failed !');
             }
             if ($retries > 0) {
-                self::downloadGit($name, $url, $branch, $move_path, $retries - 1);
+                self::downloadGit($name, $url, $branch, $submodules, $move_path, $retries - 1, $lock_as);
                 return;
             }
             throw $e;
@@ -297,7 +316,6 @@ class Downloader
         if ($pkg === null) {
             $pkg = Config::getPkg($name);
         }
-
         if ($pkg === null) {
             logger()->warning('Package {name} unknown. Skipping.', ['name' => $name]);
             return;
@@ -343,6 +361,7 @@ class Downloader
                         $name,
                         $pkg['url'],
                         $pkg['rev'],
+                        $pkg['submodules'] ?? null,
                         $pkg['extract'] ?? null,
                         self::getRetryAttempts(),
                         SPC_DOWNLOAD_PRE_BUILT
@@ -360,6 +379,11 @@ class Downloader
                     break;
                 case 'custom':          // Custom download method, like API-based download or other
                     $classes = FileSystem::getClassesPsr4(ROOT_DIR . '/src/SPC/store/pkg', 'SPC\store\pkg');
+                    if (isset($pkg['func']) && is_callable($pkg['func'])) {
+                        $pkg['name'] = $name;
+                        $pkg['func']($force, $pkg, SPC_DOWNLOAD_PACKAGE);
+                        break;
+                    }
                     foreach ($classes as $class) {
                         if (is_a($class, CustomPackage::class, true) && $class !== CustomPackage::class) {
                             $cls = new $class();
@@ -385,7 +409,7 @@ class Downloader
     }
 
     /**
-     * Download source by name and meta.
+     * Download source
      *
      * @param string $name source name
      * @param  null|array{
@@ -415,7 +439,6 @@ class Downloader
         if ($source === null) {
             $source = Config::getSource($name);
         }
-
         if ($source === null) {
             logger()->warning('Source {name} unknown. Skipping.', ['name' => $name]);
             return;
@@ -462,6 +485,7 @@ class Downloader
                         $name,
                         $source['url'],
                         $source['rev'],
+                        $source['submodules'] ?? null,
                         $source['path'] ?? null,
                         self::getRetryAttempts(),
                         $download_as
@@ -508,7 +532,14 @@ class Downloader
     /**
      * Use curl command to get http response
      *
+     * @param  string              $url     Target URL
+     * @param  string              $method  HTTP method (GET, POST, etc.)
+     * @param  array               $headers HTTP headers
+     * @param  array               $hooks   Curl hooks
+     * @param  int                 $retries Number of retry attempts
+     * @return string              Response body
      * @throws DownloaderException
+     * @throws RuntimeException
      */
     public static function curlExec(string $url, string $method = 'GET', array $headers = [], array $hooks = [], int $retries = 0): string
     {
@@ -560,6 +591,13 @@ class Downloader
     /**
      * Use curl to download sources from url
      *
+     * @param  string              $url     Download URL
+     * @param  string              $path    Target file path
+     * @param  string              $method  HTTP method
+     * @param  array               $headers HTTP headers
+     * @param  array               $hooks   Curl hooks
+     * @param  int                 $retries Number of retry attempts
+     * @throws DownloaderException
      * @throws RuntimeException
      * @throws WrongUsageException
      */
@@ -589,6 +627,12 @@ class Downloader
         }
     }
 
+    /**
+     * Get pre-built lock name from source
+     *
+     * @param  string $source Source name
+     * @return string Lock name
+     */
     public static function getPreBuiltLockName(string $source): string
     {
         $os_family = PHP_OS_FAMILY;
@@ -597,6 +641,35 @@ class Downloader
         $libc_version = SPCTarget::getLibcVersion() ?? 'default';
 
         return "{$source}-{$os_family}-{$gnu_arch}-{$libc}-{$libc_version}";
+    }
+
+    /**
+     * Get default alternative source
+     *
+     * @param  string $source_name Source name
+     * @return array  Alternative source configuration
+     */
+    public static function getDefaultAlternativeSource(string $source_name): array
+    {
+        return [
+            'type' => 'custom',
+            'func' => function (bool $force, array $source, int $download_as) use ($source_name) {
+                logger()->debug("Fetching alternative source for {$source_name}");
+                // get from dl.static-php.dev
+                $url = "https://dl.static-php.dev/static-php-cli/deps/spc-download-mirror/{$source_name}/?format=json";
+                $json = json_decode(Downloader::curlExec(url: $url, retries: intval(getenv('SPC_DOWNLOAD_RETRIES') ?: 0)), true);
+                if (!is_array($json)) {
+                    throw new RuntimeException('failed http fetch');
+                }
+                $item = $json[0] ?? null;
+                if ($item === null) {
+                    throw new RuntimeException('failed to parse json');
+                }
+                $full_url = 'https://dl.static-php.dev' . $item['full_path'];
+                $filename = basename($item['full_path']);
+                Downloader::downloadFile($source_name, $full_url, $filename, $source['path'] ?? null, $download_as);
+            },
+        ];
     }
 
     /**
